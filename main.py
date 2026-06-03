@@ -4,6 +4,7 @@ from cryptography.fernet import Fernet
 import getpass
 import base64
 import json
+import sys
 import os
 
 
@@ -276,6 +277,16 @@ class SecureBackupCLI:
 
 
 if __name__ == "__main__":
-    manager = SecureBackupManager("passwords.crp")
+    if len(sys.argv) < 2:
+        print("[!] Error: Missing database name argument.")
+        print("[-] Usage: python main.py <database_name>")
+        sys.exit(1)
+
+    target_file = sys.argv[1].strip()
+
+    if not target_file.endswith(".crp"):
+        target_file += ".crp"
+
+    manager = SecureBackupManager(target_file)
     cli = SecureBackupCLI(manager)
     cli.run()
