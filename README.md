@@ -86,14 +86,16 @@ Once authenticated, you can traverse and manipulate your data tree using the fol
 
 | Command | Syntax | Description |
 | --- | --- | --- |
-| `ls` | `ls` | Lists directories `[DIR]` and values `[VAL]` at the current path level. |
-| `cd` | `cd <key>` or `cd ..` | Navigates into a directory key or goes back to the parent directory. |
-| `mkdir` | `mkdir <key>` | Creates a new empty nested directory (dictionary) at the current level. |
-| `set` | `set <key> <value>` | Assigns a string value to a key at the current level. |
-| `get` | `get <key>` | Displays the value of a specific key without changing your path. |
+| `ls` | `ls` | Lists indexed directories `[DIR]` and values `[VAL]` at the current path level.|
+| `cd` | `cd <key>` or `cd <index>` or `cd ..` | Navigates into a directory using its exact key name or its numeric index. Use `..` to return to the parent directory. |
+| `mkdir` | `mkdir <key>` | Creates a new empty nested directory (dictionary) at the current level. **Always processes input as a literal name, ignoring index numbers.** |
+| `set` | `set <key/index> <value>` | Assigns a string value to a key or updates an existing node via its index number. |
+| `get` | `get <key>` or `get <index>` | Displays the value of a specific node using its exact name or numeric index without changing your path. |
 | `save` | `save` | Rotates the salt, re-encrypts the RAM data, and commits changes to disk. |
 | `clear` | `clear` | Clears the screen to prevent optical leaking of sensitive terminal logs. |
 | `exit` | `exit` | Terminates the session. Unsaved changes in RAM will be destroyed. |
+
+> ⚠️ **Exact Match Priority Rule:** If you pass an integer (e.g., `get 1`) to a command, the system will first look for a key literally named `"1"`. If no such literal key exists, it will fall back to resolving it as the 1st item from the last sorted `ls` output.
 
 ---
 
@@ -109,14 +111,32 @@ Enter Master Password:
 [Vault:/]🔑 mkdir infrastructure
 [-] Created directory 'infrastructure'. You can now 'cd' into it.
 
-[Vault:/]🔑 cd infrastructure
+[Vault:/]🔑 mkdir application
+[-] Created directory 'application'. You can now 'cd' into it.
+
+[Vault:/]🔑 set root_token secret_token_abc123
+[-] Successfully set 'root_token'. Remember to 'save'.
+
+[Vault:/]🔑 ls
+
+Available Keys:
+  1. [DIR] application
+  2. [DIR] infrastructure
+  3. [VAL] root_token
+
+[Vault:/]🔑 cd 2
 
 [Vault:/infrastructure]🔑 set prod_db_host 10.0.0.5
 [-] Successfully set 'prod_db_host'. Remember to 'save'.
 
 [Vault:/infrastructure]🔑 ls
+
 Available Keys:
-  [VAL] prod_db_host
+  1. [VAL] prod_db_host
+
+[Vault:/infrastructure]🔑 get 1
+
+prod_db_host -> 10.0.0.5
 
 [Vault:/infrastructure]🔑 save
 [+] Database encrypted and safely written to disk.

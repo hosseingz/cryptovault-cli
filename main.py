@@ -129,6 +129,39 @@ class SecureBackupCLI:
         path_str = "/" + "/".join(self.current_path)
         print(f"\n[Vault:{path_str}]🔑 ", end="")
 
+
+    def _get_sorted_keys(self, node: dict) -> list:
+        """
+        Sorts keys within a dictionary node. 
+        Directories (nested dicts) come first, then sorted alphabetically.
+        """
+        return sorted(node.keys(), key=lambda k: (0 if isinstance(node[k], dict) else 1, k.lower()))
+
+    def _resolve_key(self, target: str) -> str:
+        """
+        Resolves a numeric index input back to its actual string key.
+        Implements 'Exact Match Priority' to prevent dangerous overwrites if a key is named '1'.
+        """
+        node = self._get_current_node()
+        if not isinstance(node, dict):
+            return target
+
+        # 1. Exact Match Priority: If the key literally exists, return it immediately.
+        if target in node:
+            return target
+
+        # 2. Index Resolution: If input is a number, map it to the sorted list.
+        if target.isdigit():
+            idx = int(target)
+            sorted_keys = self._get_sorted_keys(node)
+            # Ensure the provided index is within valid bounds (1-based index)
+            if 1 <= idx <= len(sorted_keys):
+                return sorted_keys[idx - 1]
+
+        # 3. Fallback: Return raw target (will naturally fail later if invalid)
+        return target
+
+
     def authenticate(self) -> bool:
         """Handles the initial login/decryption phase."""
         print("=== Secure Backup Manager CLI ===")
@@ -147,12 +180,15 @@ class SecureBackupCLI:
         node = self._get_current_node()
         if isinstance(node, dict):
             if not node:
-                print(" (empty directory)")
+                print("  (empty directory)")
                 return
+            
             print("\nAvailable Keys:")
-            for key, val in node.items():
+            sorted_keys = self._get_sorted_keys(node)
+            for idx, key in enumerate(sorted_keys, start=1):
+                val = node[key]
                 type_indicator = "[DIR]" if isinstance(val, dict) else "[VAL]"
-                print(f"  {type_indicator} {key}")
+                print(f"  {idx}. {type_indicator} {key}")
         else:
             print(f"\nValue: {node}")
 
@@ -163,14 +199,16 @@ class SecureBackupCLI:
                 self.current_path.pop()
             return
 
+        target_key = self._resolve_key(target)
+
         node = self._get_current_node()
-        if isinstance(node, dict) and target in node:
-            if isinstance(node[target], dict):
-                self.current_path.append(target)
+        if isinstance(node, dict) and target_key in node:
+            if isinstance(node[target_key], dict):
+                self.current_path.append(target_key)
             else:
-                print(f"[!] '{target}' is a value, not a directory. Cannot cd into it.")
+                print(f"[!] '{target_key}' is a value, not a directory. Cannot cd into it.")
         else:
-            print(f"[!] Key '{target}' not found.")
+            print(f"[!] Key or Index '{target}' not found.")
 
     def cmd_mkdir(self, key: str):
         """Creates a new empty dictionary (directory) at the current path."""
@@ -179,6 +217,8 @@ class SecureBackupCLI:
             print("[!] Cannot create a directory inside a value node.")
             return
 
+        # We DO NOT use _resolve_key here. 
+        # If the user types 'mkdir 1', they explicitly want a directory named '1'.
         if key in node:
             print(f"[!] Key '{key}' already exists.")
             return
@@ -190,11 +230,13 @@ class SecureBackupCLI:
 
     def cmd_get(self, key: str):
         """Retrieves and displays a specific value without changing paths."""
+        target_key = self._resolve_key(key)
+        
         node = self._get_current_node()
-        if isinstance(node, dict) and key in node:
-            print(f"\n{key} -> {node[key]}")
+        if isinstance(node, dict) and target_key in node:
+            print(f"\n{target_key} -> {node[target_key]}")
         else:
-            print(f"[!] Key '{key}' not found here.")
+            print(f"[!] Key or Index '{key}' not found here.")
 
     def cmd_set(self, key: str, value: str):
         """Sets or updates a value at the current path."""
@@ -203,17 +245,20 @@ class SecureBackupCLI:
             print("[!] Cannot set a key-value pair inside a value node.")
             return
             
-        full_path = self.current_path + [key]
+        # Resolve index. If index exists, update it. If not, treat as a new literal key name.
+        target_key = self._resolve_key(key)
+
+        full_path = self.current_path + [target_key]
         self.manager.set_value(full_path, value)
-        print(f"[-] Successfully set '{key}'. Remember to 'save'.")
+        print(f"[-] Successfully set '{target_key}'. Remember to 'save'.")
 
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
-        print("  ls          - List keys at current level")
-        print("  cd <key>    - Move into a key (use 'cd ..' to go back)")
+        print("  ls          - List keys (Sorted, DIRs first)")
+        print("  cd <key/id> - Move into a key (use 'cd ..' to go back)")
         print("  mkdir <key> - Create a new empty nested directory")
-        print("  get <key>   - View the value of a specific key")
+        print("  get <key/id>- View the value of a specific key")
         print("  set <k> <v> - Set a value at the current path")
         print("  save        - Encrypt and commit changes to disk")
         print("  clear       - Clear the terminal screen")
@@ -246,7 +291,7 @@ class SecureBackupCLI:
                     self._clear_screen()
                 elif cmd == "cd":
                     if len(user_input) < 2:
-                        print("[!] Usage: cd <key_name> or cd ..")
+                        print("[!] Usage: cd <key_name or id> or cd ..")
                     else:
                         self.cmd_cd(user_input[1])
                 elif cmd == "mkdir":
@@ -256,12 +301,12 @@ class SecureBackupCLI:
                         self.cmd_mkdir(user_input[1])
                 elif cmd == "get":
                     if len(user_input) < 2:
-                        print("[!] Usage: get <key_name>")
+                        print("[!] Usage: get <key_name or id>")
                     else:
                         self.cmd_get(user_input[1])
                 elif cmd == "set":
                     if len(user_input) < 3:
-                        print("[!] Usage: set <key_name> <value>")
+                        print("[!] Usage: set <key_name or id> <value>")
                     else:
                         self.cmd_set(user_input[1], user_input[2])
                 elif cmd == "save":
