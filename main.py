@@ -103,6 +103,26 @@ class SecureBackupManager:
                 return None
         return current
 
+    def remove_value(self, keys: list) -> bool:
+        """
+        Removes a target key or sub-tree dynamically using its precise path list.
+        Returns True if deleted successfully, False if path resolution fails.
+        """
+        if not keys:
+            return False
+            
+        current = self.data
+        for key in keys[:-1]:
+            if isinstance(current, dict) and key in current:
+                current = current[key]
+            else:
+                return False
+                
+        if isinstance(current, dict) and keys[-1] in current:
+            del current[keys[-1]]
+            return True
+        return False
+
     def get_all_data(self) -> dict:
         """Returns the entire dictionary currently held in RAM."""
         return self.data
@@ -128,7 +148,6 @@ class SecureBackupCLI:
         """Generates a dynamic prompt based on the current path."""
         path_str = "/" + "/".join(self.current_path)
         print(f"\n[Vault:{path_str}]🔑 ", end="")
-
 
     def _get_sorted_keys(self, node: dict) -> list:
         """
@@ -160,7 +179,6 @@ class SecureBackupCLI:
 
         # 3. Fallback: Return raw target (will naturally fail later if invalid)
         return target
-
 
     def authenticate(self) -> bool:
         """Handles the initial login/decryption phase."""
@@ -252,6 +270,50 @@ class SecureBackupCLI:
         self.manager.set_value(full_path, value)
         print(f"[-] Successfully set '{target_key}'. Remember to 'save'.")
 
+    def cmd_rm(self, target_key: str):
+        """
+        Removes a key or an entire directory from the current node level.
+        Requires literal matches only (forbids index numeric mapping) and enforces target-aware confirmation terms.
+        """
+        node = self._get_current_node()
+        if not isinstance(node, dict):
+            print("[!] Cannot execute destruction commands on a leaf value node.")
+            return
+
+        # Explicit Security Friction: Strictly bypass index resolution. 
+        # Even if target_key is a valid integer string, treat it strictly as a literal key name.
+        if target_key not in node:
+            print(f"[!] Key '{target_key}' not found. Note: 'rm' strictly requires literal key names, not numeric IDs.")
+            return
+
+        target_node = node[target_key]
+        
+        # Scenario A: Non-empty Directory (Demands Recursive Deep-Purge Agreement)
+        if isinstance(target_node, dict) and len(target_node) > 0:
+            item_count = len(target_node)
+            print(f"[⚠️ WARNING] '{target_key}' is a non-empty directory containing {item_count} active item(s).")
+            print("[!] This action will recursively delete ALL nested keys inside this tree structure.")
+            confirm = input("--> To proceed, type 'DELETE_ALL' exactly: ").strip()
+            if confirm != "DELETE_ALL":
+                print("[-] Aborted. No structures were harmed.")
+                return
+
+        # Scenario B: Leaf Node (Value) or Empty Directory (Requires Simple Affirmation)
+        else:
+            node_type = "empty directory" if isinstance(target_node, dict) else "value node"
+            print(f"[⚠️ WARNING] You are about to delete the {node_type} named '{target_key}'.")
+            confirm = input("--> To proceed, type 'YES' exactly: ").strip()
+            if confirm != "YES":
+                print("[-] Aborted. Deletion cancelled.")
+                return
+
+        # Execute dynamic structural detachment via manager
+        full_path = self.current_path + [target_key]
+        if self.manager.remove_value(full_path):
+            print(f"[+] Successfully purged '{target_key}' from active RAM state. Remember to 'save'.")
+        else:
+            print("[!] Critical Failure: Failed to remove node structure from path state.")
+
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
@@ -260,6 +322,7 @@ class SecureBackupCLI:
         print("  mkdir <key> - Create a new empty nested directory")
         print("  get <key/id>- View the value of a specific key")
         print("  set <k> <v> - Set a value at the current path")
+        print("  rm <key>    - Delete a key or directory (Requires precise literal name)")
         print("  save        - Encrypt and commit changes to disk")
         print("  clear       - Clear the terminal screen")
         print("  exit        - Exit the manager")
@@ -309,6 +372,11 @@ class SecureBackupCLI:
                         print("[!] Usage: set <key_name or id> <value>")
                     else:
                         self.cmd_set(user_input[1], user_input[2])
+                elif cmd == "rm":
+                    if len(user_input) < 2:
+                        print("[!] Usage: rm <exact_key_name>")
+                    else:
+                        self.cmd_rm(user_input[1])
                 elif cmd == "save":
                     self.manager.save_file(self.master_password)
                     print("[+] Database encrypted and safely written to disk.")
@@ -318,7 +386,6 @@ class SecureBackupCLI:
             except (KeyboardInterrupt, EOFError):
                 print("\nSession interrupted. Exiting safely.")
                 break
-
 
 
 if __name__ == "__main__":
