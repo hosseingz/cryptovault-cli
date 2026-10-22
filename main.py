@@ -288,14 +288,24 @@ class SecureBackupCLI:
             print(f"[!] Key or Index '{key}' not found here.")
 
     def cmd_set(self, key: str, value: str):
-        """Sets or updates a value at the current path."""
+        """Sets or updates a key-value pair at the current path."""
         node = self._get_current_node()
         if not isinstance(node, dict):
             print("[!] Cannot set a key-value pair inside a value node.")
             return
-            
-        # Resolve index. If index exists, update it. If not, treat as a new literal key name.
+
         target_key = self._resolve_key(key)
+
+        if target_key in node:
+            if isinstance(node[target_key], dict):
+                print(f"[!] Target '{target_key}' is a directory. Cannot overwrite a directory with a value.")
+                return
+
+            current_val = node[target_key]
+            confirm = input(f"[?] Key '{target_key}' exists (current: '{current_val}'). Overwrite? (y/N): ").strip().lower()
+            if confirm not in ("y", "yes"):
+                print("[-] Update cancelled.")
+                return
 
         full_path = self.current_path + [target_key]
         self.manager.set_value(full_path, value)
