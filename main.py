@@ -149,6 +149,31 @@ class SecureBackupCLI:
         path_str = "/" + "/".join(self.current_path)
         print(f"\n[Vault:{path_str}]🔑 ", end="")
 
+    def _print_tree(self, node: dict, prefix: str = ""):
+        """
+        Recursively renders nested dictionary structures as a formatted tree.
+        """
+        if not node:
+            print(f"{prefix}└── (empty)")
+            return
+
+        # Sort items: nested directories first, then alphabetically
+        items = sorted(
+            node.items(),
+            key=lambda item: (0 if isinstance(item[1], dict) else 1, item[0].lower())
+        )
+
+        for index, (key, value) in enumerate(items):
+            is_last = (index == len(items) - 1)
+            connector = "└── " if is_last else "├── "
+
+            if isinstance(value, dict):
+                print(f"{prefix}{connector}{key}/")
+                extension = "    " if is_last else "│   "
+                self._print_tree(value, prefix + extension)
+            else:
+                print(f"{prefix}{connector}{key}: {value}")
+
     def _get_sorted_keys(self, node: dict) -> list:
         """
         Sorts keys within a dictionary node. 
@@ -247,12 +272,18 @@ class SecureBackupCLI:
         print(f"[-] Created directory '{key}'. You can now 'cd' into it.")
 
     def cmd_get(self, key: str):
-        """Retrieves and displays a specific value without changing paths."""
+        """Retrieves and displays a value or renders a directory subtree."""
         target_key = self._resolve_key(key)
-        
+
         node = self._get_current_node()
         if isinstance(node, dict) and target_key in node:
-            print(f"\n{target_key} -> {node[target_key]}")
+            target_value = node[target_key]
+            
+            if isinstance(target_value, dict):
+                print(f"\n{target_key}/")
+                self._print_tree(target_value)
+            else:
+                print(f"\n{target_key}: {target_value}")
         else:
             print(f"[!] Key or Index '{key}' not found here.")
 
