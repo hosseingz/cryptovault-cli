@@ -123,6 +123,23 @@ class SecureBackupManager:
             return True
         return False
 
+    def rename_value(self, path: list, old_key: str, new_key: str) -> bool:
+        """
+        Renames an existing key inside a nested dictionary path.
+        Returns True if successful, False if the path resolution fails or key collision occurs.
+        """
+        current = self.data
+        for key in path:
+            if isinstance(current, dict) and key in current:
+                current = current[key]
+            else:
+                return False
+
+        if isinstance(current, dict) and old_key in current and new_key not in current:
+            current[new_key] = current.pop(old_key)
+            return True
+        return False
+
     def get_all_data(self) -> dict:
         """Returns the entire dictionary currently held in RAM."""
         return self.data
@@ -311,6 +328,45 @@ class SecureBackupCLI:
         self.manager.set_value(full_path, value)
         print(f"[-] Successfully set '{target_key}'. Remember to 'save'.")
 
+    def cmd_rename(self, old_target: str, new_key: str):
+        """Renames a key or directory at the current path level."""
+        node = self._get_current_node()
+        if not isinstance(node, dict):
+            print("[!] Cannot rename inside a value node.")
+            return
+
+        old_key = self._resolve_key(old_target)
+        if old_key not in node:
+            print(f"[!] Key or Index '{old_target}' not found here.")
+            return
+
+        new_key = new_key.strip()
+        if not new_key:
+            print("[!] New key name cannot be empty.")
+            return
+
+        if "/" in new_key:
+            print("[!] Invalid name: Key names cannot contain '/'.")
+            return
+
+        if " " in new_key:
+            print("[!] Invalid name: Key names cannot contain spaces.")
+            return
+
+        if new_key == old_key:
+            print(f"[!] New key name is identical to the current key name.")
+            return
+
+        if new_key in node:
+            conflict_type = "directory" if isinstance(node[new_key], dict) else "value"
+            print(f"[!] Key '{new_key}' already exists as a {conflict_type}. Rename aborted.")
+            return
+
+        if self.manager.rename_value(self.current_path, old_key, new_key):
+            print(f"[-] Successfully renamed '{old_key}' to '{new_key}'. Remember to 'save'.")
+        else:
+            print("[!] Critical Failure: Failed to rename target key.")
+
     def cmd_rm(self, target_key: str):
         """
         Removes a key or an entire directory from the current node level.
@@ -363,6 +419,7 @@ class SecureBackupCLI:
         print("  mkdir <key> - Create a new empty nested directory")
         print("  get <key/id>- View the value of a specific key")
         print("  set <k> <v> - Set a value at the current path")
+        print("  rename <k/id> <new_k> - Rename a key or directory")
         print("  rm <key>    - Delete a key or directory (Requires precise literal name)")
         print("  save        - Encrypt and commit changes to disk")
         print("  clear       - Clear the terminal screen")
@@ -413,6 +470,11 @@ class SecureBackupCLI:
                         print("[!] Usage: set <key_name or id> <value>")
                     else:
                         self.cmd_set(user_input[1], user_input[2])
+                elif cmd == "rename":
+                    if len(user_input) < 3:
+                        print("[!] Usage: rename <key_name or id> <new_key_name>")
+                    else:
+                        self.cmd_rename(user_input[1], user_input[2])
                 elif cmd == "rm":
                     if len(user_input) < 2:
                         print("[!] Usage: rm <exact_key_name>")
