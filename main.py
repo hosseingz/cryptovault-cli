@@ -244,14 +244,20 @@ class SecureBackupCLI:
             print("[!] Access Denied. Wrong password or corrupted file.")
             return False
 
-    def cmd_ls(self):
-        """Lists keys at the current level or prints the value if it's a leaf."""
+    def cmd_ls(self, tree_mode: bool = False):
+        """Lists keys at the current level or renders the subtree if tree_mode is True."""
         node = self._get_current_node()
         if isinstance(node, dict):
             if not node:
                 print("  (empty directory)")
                 return
-            
+
+            if tree_mode:
+                root_label = self.current_path[-1] if self.current_path else "."
+                print(f"\n{root_label}/")
+                self._print_tree(node)
+                return
+
             print("\nAvailable Keys:")
             sorted_keys = self._get_sorted_keys(node)
             for idx, key in enumerate(sorted_keys, start=1):
@@ -535,7 +541,7 @@ class SecureBackupCLI:
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
-        print("  ls          - List keys (Sorted, DIRs first)")
+        print("  ls [--tree|--tr] - List keys (flat or recursive tree view)")
         print("  cd <key/id> - Move into a key (use 'cd ..' to go back)")
         print("  mkdir <key> - Create a new empty nested directory")
         print("  get <key/id>- View the value of a specific key")
@@ -576,7 +582,12 @@ class SecureBackupCLI:
                     print("Exiting.")
                     break
                 elif cmd == "ls":
-                    self.cmd_ls()
+                    if len(user_input) == 1:
+                        self.cmd_ls()
+                    elif len(user_input) == 2 and user_input[1].lower() in ("--tree", "--tr"):
+                        self.cmd_ls(tree_mode=True)
+                    else:
+                        print(f"[!] Unknown option '{user_input[1]}'. Usage: ls [--tree | --tr]")
                 elif cmd == "help":
                     self.cmd_help()
                 elif cmd == "clear":
