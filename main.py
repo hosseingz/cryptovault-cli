@@ -4,6 +4,7 @@ from cryptography.fernet import Fernet
 import getpass
 import base64
 import json
+import copy
 import sys
 import os
 
@@ -143,13 +144,15 @@ class SecureBackupManager:
     def get_all_data(self) -> dict:
         """Returns the entire dictionary currently held in RAM."""
         return self.data
-    
+
 
 class SecureBackupCLI:
     def __init__(self, manager: SecureBackupManager):
         self.manager = manager
         self.current_path = []  # Tracks the current position in the nested dict
         self.master_password = ""
+        self.clipboard = None  # Stores metadata: {'op': 'COPY'|'CUT', 'path': list, 'key': str}
+ 
 
     def _clear_screen(self):
         """Clears the terminal screen for security."""
@@ -367,6 +370,118 @@ class SecureBackupCLI:
         else:
             print("[!] Critical Failure: Failed to rename target key.")
 
+    def cmd_copy(self, target: str):
+        """Places a target key or directory into the clipboard for copying."""
+        node = self._get_current_node()
+        if not isinstance(node, dict):
+            print("[!] Cannot copy from a value node.")
+            return
+
+        target_key = self._resolve_key(target)
+        if target_key not in node:
+            print(f"[!] Key or Index '{target}' not found here.")
+            return
+
+        self.clipboard = {
+            "op": "COPY",
+            "path": list(self.current_path),
+            "key": target_key,
+        }
+        print(f"[-] Copied '{target_key}' to clipboard.")
+
+    def cmd_cut(self, target: str):
+        """Places a target key or directory into the clipboard for moving."""
+        node = self._get_current_node()
+        if not isinstance(node, dict):
+            print("[!] Cannot cut from a value node.")
+            return
+
+        target_key = self._resolve_key(target)
+        if target_key not in node:
+            print(f"[!] Key or Index '{target}' not found here.")
+            return
+
+        self.clipboard = {
+            "op": "CUT",
+            "path": list(self.current_path),
+            "key": target_key,
+        }
+        print(f"[-] Cut '{target_key}' to clipboard.")
+
+    def cmd_paste(self, new_name: str = None):
+        """Pastes the clipboard contents into the current directory."""
+        if not self.clipboard:
+            print("[!] Clipboard is empty. Use 'copy' or 'cut' first.")
+            return
+
+        dest_node = self._get_current_node()
+        if not isinstance(dest_node, dict):
+            print("[!] Cannot paste inside a value node.")
+            return
+
+        src_path = self.clipboard["path"]
+        src_key = self.clipboard["key"]
+        op = self.clipboard["op"]
+
+        # Validate that the source still exists in the database
+        src_parent = self.manager.get_value(src_path) if src_path else self.manager.get_all_data()
+        if not isinstance(src_parent, dict) or src_key not in src_parent:
+            print("[!] Source item no longer exists. Clipboard cleared.")
+            self.clipboard = None
+            return
+
+        src_full_path = src_path + [src_key]
+
+        # Prevent circular tree structures when moving a directory into its own subtree
+        if op == "CUT" and self.current_path[:len(src_full_path)] == src_full_path:
+            print("[!] Cannot move a directory into itself or one of its descendants.")
+            return
+
+        # Determine destination key name
+        dest_key = new_name.strip() if new_name else src_key
+
+        if new_name:
+            if not dest_key:
+                print("[!] New key name cannot be empty.")
+                return
+            if "/" in dest_key:
+                print("[!] Invalid name: Key names cannot contain '/'.")
+                return
+            if " " in dest_key:
+                print("[!] Invalid name: Key names cannot contain spaces.")
+                return
+
+        # Handle same-location no-op for cut operations
+        if op == "CUT" and src_path == self.current_path and src_key == dest_key:
+            print("[-] Source and destination are identical. Nothing moved.")
+            self.clipboard = None
+            return
+
+        # Handle key collisions in the destination directory
+        if dest_key in dest_node:
+            if isinstance(dest_node[dest_key], dict):
+                print(f"[!] Target '{dest_key}' already exists as a directory. Use 'paste <new_name>' to avoid collision.")
+                return
+
+            confirm = input(f"[?] Key '{dest_key}' already exists (current: '{dest_node[dest_key]}'). Overwrite? (y/N): ").strip().lower()
+            if confirm not in ("y", "yes"):
+                print("[-] Paste cancelled.")
+                return
+
+        # Deep copy to ensure complete structural independence
+        payload = copy.deepcopy(src_parent[src_key])
+        dest_full_path = self.current_path + [dest_key]
+
+        # Atomic commit to destination
+        self.manager.set_value(dest_full_path, payload)
+
+        if op == "CUT":
+            self.manager.remove_value(src_full_path)
+            self.clipboard = None
+            print(f"[+] Successfully moved '{src_key}' to '{dest_key}'. Remember to 'save'.")
+        else:
+            print(f"[+] Successfully copied '{src_key}' to '{dest_key}'. Remember to 'save'.")
+
     def cmd_rm(self, target_key: str):
         """
         Removes a key or an entire directory from the current node level.
@@ -420,6 +535,9 @@ class SecureBackupCLI:
         print("  get <key/id>- View the value of a specific key")
         print("  set <k> <v> - Set a value at the current path")
         print("  rename <k/id> <new_k> - Rename a key or directory")
+        print("  copy <k/id> - Copy a key or directory to clipboard")
+        print("  cut <k/id>  - Cut a key or directory to clipboard")
+        print("  paste [new] - Paste item into current path (optional new name)")
         print("  rm <key>    - Delete a key or directory (Requires precise literal name)")
         print("  save        - Encrypt and commit changes to disk")
         print("  clear       - Clear the terminal screen")
@@ -475,6 +593,22 @@ class SecureBackupCLI:
                         print("[!] Usage: rename <key_name or id> <new_key_name>")
                     else:
                         self.cmd_rename(user_input[1], user_input[2])
+                elif cmd == "copy":
+                    if len(user_input) < 2:
+                        print("[!] Usage: copy <key_name or id>")
+                    else:
+                        self.cmd_copy(user_input[1])
+                elif cmd == "cut":
+                    if len(user_input) < 2:
+                        print("[!] Usage: cut <key_name or id>")
+                    else:
+                        self.cmd_cut(user_input[1])
+                elif cmd == "paste":
+                    if len(user_input) > 2:
+                        print("[!] Usage: paste [new_key_name] (key names cannot contain spaces)")
+                    else:
+                        new_name = user_input[1] if len(user_input) == 2 else None
+                        self.cmd_paste(new_name)
                 elif cmd == "rm":
                     if len(user_input) < 2:
                         print("[!] Usage: rm <exact_key_name>")
