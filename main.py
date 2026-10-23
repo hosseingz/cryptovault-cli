@@ -14,6 +14,7 @@ class SecureBackupManager:
     def __init__(self, filepath="passwords.crp"):
         self.filepath = filepath
         self.data = {}  # Holds the unencrypted data strictly in RAM
+        self.has_unsaved_changes = False
 
     def _derive_key(self, password: str, salt: bytes) -> bytes:
         """Derives a secure 32-byte Fernet key from a password and salt using PBKDF2."""
@@ -53,6 +54,7 @@ class SecureBackupManager:
             # Decrypt and parse JSON directly into memory
             decrypted_bytes = fernet.decrypt(ciphertext)
             self.data = json.loads(decrypted_bytes.decode('utf-8'))
+            self.has_unsaved_changes = False
             return True
         except Exception:
             # Decryption failed (Invalid Token / Wrong Password)
@@ -78,6 +80,7 @@ class SecureBackupManager:
 
         with open(self.filepath, 'wb') as file:
             file.write(payload)
+        self.has_unsaved_changes = False
 
     def set_value(self, keys: list, value):
         """
@@ -90,6 +93,7 @@ class SecureBackupManager:
                 current[key] = {}
             current = current[key]
         current[keys[-1]] = value
+        self.has_unsaved_changes = True
 
     def get_value(self, keys: list):
         """
@@ -121,6 +125,7 @@ class SecureBackupManager:
                 
         if isinstance(current, dict) and keys[-1] in current:
             del current[keys[-1]]
+            self.has_unsaved_changes = True
             return True
         return False
 
@@ -138,6 +143,7 @@ class SecureBackupManager:
 
         if isinstance(current, dict) and old_key in current and new_key not in current:
             current[new_key] = current.pop(old_key)
+            self.has_unsaved_changes = True
             return True
         return False
 
@@ -560,7 +566,14 @@ class SecureBackupCLI:
                 cmd = user_input[0].lower()
 
                 if cmd == "exit":
-                    print("Exiting. Unsaved changes in RAM will be lost.")
+                    if self.manager.has_unsaved_changes:
+                        print("[⚠️ WARNING] You have unsaved changes in memory!")
+                        confirm = input("--> Are you sure you want to exit without saving? (y/N): ").strip().lower()
+                        if confirm not in ("y", "yes"):
+                            print("[-] Exit aborted. Use 'save' to persist your changes.")
+                            continue
+
+                    print("Exiting.")
                     break
                 elif cmd == "ls":
                     self.cmd_ls()
