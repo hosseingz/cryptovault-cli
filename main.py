@@ -2,7 +2,9 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.fernet import Fernet
 import getpass
+import secrets
 import base64
+import string
 import json
 import copy
 import sys
@@ -577,23 +579,86 @@ class SecureBackupCLI:
         except Exception as e:
             print(f"[!] Critical Failure: Failed to write new database: {e}")
 
+    def cmd_genpass(self, args: list):
+        """
+        Generates a cryptographically strong random password using the secrets module.
+        Syntax: genpass [length] [--no-sym|-ns] [--no-num|-nn] [--set|-s <key>]
+        """
+        length = 8
+        use_symbols = True
+        use_numbers = True
+        set_target_key = None
+
+        # Parse arguments and flags
+        idx = 0
+        while idx < len(args):
+            arg = args[idx]
+            if arg in ("--no-sym", "-ns"):
+                use_symbols = False
+            elif arg in ("--no-num", "-nn"):
+                use_numbers = False
+            elif arg in ("--set", "-s"):
+                if idx + 1 < len(args):
+                    set_target_key = args[idx + 1]
+                    idx += 1
+                else:
+                    print("[!] Usage error: '--set' requires a target key name.")
+                    return
+            elif arg.isdigit():
+                length = int(arg)
+            else:
+                print(f"[!] Unknown option or invalid length: '{arg}'")
+                print("[-] Usage: genpass [length] [--no-sym|-ns] [--no-num|-nn] [--set|-s <key>]")
+                return
+            idx += 1
+
+        if length < 4:
+            print("[!] Password length must be at least 4 characters.")
+            return
+
+        # Build character pools
+        char_pools = [string.ascii_lowercase, string.ascii_uppercase]
+        if use_numbers:
+            char_pools.append(string.digits)
+        if use_symbols:
+            char_pools.append("!@#$%^&*()-_=+[]{}|;:,.<>?")
+
+        # Guarantee at least one character from each active pool
+        password_chars = [secrets.choice(pool) for pool in char_pools]
+
+        # Fill the remainder from the aggregated universe
+        full_universe = "".join(char_pools)
+        for _ in range(length - len(password_chars)):
+            password_chars.append(secrets.choice(full_universe))
+
+        # Cryptographically shuffle to eliminate positional predictability
+        secrets.SystemRandom().shuffle(password_chars)
+        generated_password = "".join(password_chars)
+
+        print(f"\nGenerated Password: {generated_password}")
+
+        # Optionally persist directly into the active node structure
+        if set_target_key:
+            self.cmd_set(set_target_key, generated_password)
+
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
-        print("  ls [--tree|--tr] - List keys (flat or recursive tree view)")
-        print("  cd <key/id> - Move into a key (use 'cd ..' to go back)")
-        print("  mkdir <key> - Create a new empty nested directory")
-        print("  get <key/id>- View the value of a specific key")
-        print("  set <k> <v> - Set a value at the current path")
-        print("  rename <k/id> <new_k> - Rename a key or directory")
-        print("  copy <k/id> - Copy a key or directory to clipboard")
-        print("  cut <k/id>  - Cut a key or directory to clipboard")
-        print("  paste [new] - Paste item into current path (optional new name)")
-        print("  rm <key>    - Delete a key or directory (Requires precise literal name)")
-        print("  passwd <new_file> - Export vault to a new file with a new password")
-        print("  save        - Encrypt and commit changes to disk")
-        print("  clear       - Clear the terminal screen")
-        print("  exit        - Exit the manager")
+        print("  ls [--tree|--tr]                       - List keys (flat or recursive tree view)")
+        print("  cd <key/id>                            - Move into a key (use 'cd ..' to go back)")
+        print("  mkdir <key>                            - Create a new empty nested directory")
+        print("  get <key/id>                           - View the value of a specific key")
+        print("  genpass [len] [-ns] [-nn] [-s <k>]     - Generate a strong password")
+        print("  set <k> <v>                            - Set a value at the current path")
+        print("  rename <k/id> <new_k>                  - Rename a key or directory")
+        print("  copy <k/id>                            - Copy a key or directory to clipboard")
+        print("  cut <k/id>                             - Cut a key or directory to clipboard")
+        print("  paste [new]                            - Paste item into current path (optional new name)")
+        print("  rm <key>                               - Delete a key or directory (Requires precise literal name)")
+        print("  passwd <new_file>                      - Export vault to a new file with a new password")
+        print("  save                                   - Encrypt and commit changes to disk")
+        print("  clear                                  - Clear the terminal screen")
+        print("  exit                                   - Exit the manager")
 
     def run(self):
         """Main execution loop for the CLI interaction."""
@@ -605,10 +670,11 @@ class SecureBackupCLI:
         while True:
             try:
                 self._print_prompt()
-                user_input = input().strip().split(maxsplit=2)
-                if not user_input:
+                raw_line = input().strip()
+                if not raw_line:
                     continue
 
+                user_input = raw_line.split(maxsplit=2)
                 cmd = user_input[0].lower()
 
                 if cmd == "exit":
@@ -647,6 +713,10 @@ class SecureBackupCLI:
                         print("[!] Usage: get <key_name or id>")
                     else:
                         self.cmd_get(user_input[1])
+                elif cmd == "genpass":
+                    # Extract all arguments following the 'genpass' command
+                    raw_args = raw_line.split()[1:]
+                    self.cmd_genpass(raw_args)
                 elif cmd == "set":
                     if len(user_input) < 3:
                         print("[!] Usage: set <key_name or id> <value>")

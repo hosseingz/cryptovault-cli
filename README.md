@@ -14,6 +14,7 @@ Data is decrypted strictly into RAM during runtime and is never leaked to the di
 * **Destructive Operation Friction:** Structural deletions enforce explicit validation mechanisms based on node depth and type to prevent accidental data loss.
 * **Dirty State Protection:** In-memory changes are continuously tracked (`has_unsaved_changes`) to prevent unintended data loss when terminating the session without persisting changes.
 * **Zero-Risk Password Migration:** Re-keying exports active RAM state to an entirely new encrypted database container, ensuring existing vaults remain intact if an issue arises.
+* **CSPRNG Password Generation:** Employs the OS-level cryptographically secure pseudo-random number generator (`secrets` module) ensuring non-deterministic entropy across letters, numbers, and symbols.
 
 ---
 
@@ -91,6 +92,7 @@ Once authenticated, you can traverse and manipulate your data tree using the fol
 | `mkdir` | `mkdir <key>` | Creates a new empty nested directory (dictionary) at the current level. **Always processes input as a literal name, ignoring index numbers.** |
 | `set` | `set <key/index> <value>` | Assigns a string value to a key or updates an existing node via its index number. Blocks overwriting directory nodes and prompts for confirmation if updating existing values. |
 | `get` | `get <key>` or `get <index>` | Displays the value of a specific node. If targeting a directory node, renders its entire nested subtree visually. |
+| `genpass` | `genpass [length] [--no-sym] [--no-num] [--set <key>]` | Generates a cryptographically strong password. Supports flags `-ns` (no symbols), `-nn` (no numbers), and `-s <key>` to directly persist into the active path. |
 | `rename` | `rename <key/index> <new_key>` | Renames a key or directory at the current path. Enforces strict name validation (no `/` or spaces) and prevents key collisions. |
 | `copy` | `copy <key/index>` | Copies a key or directory to the internal clipboard for safe deep duplication elsewhere. |
 | `cut` | `cut <key/index>` | Stages a key or directory to the clipboard for moving. Prevents circular tree placement into child descendants. |
@@ -148,6 +150,11 @@ Available Keys:
     ├── backup_db_host: 10.0.0.5
     ├── prod_db_host: 10.0.0.5
     └── secondary_db: 10.0.0.6
+
+[Vault:/]🔑 genpass 16 -s api_token
+
+Generated Password: kP9#mX2$vL8*wZ5!
+[-] Successfully set 'api_token'. Remember to 'save'.
 
 [Vault:/]🔑 save
 [+] Database encrypted and safely written to disk.
