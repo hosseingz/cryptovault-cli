@@ -12,6 +12,8 @@ Data is decrypted strictly into RAM during runtime and is never leaked to the di
 * **Encryption:** Authenticated symmetric encryption via AES-128 in CBC mode with a SHA-256 HMAC (Fernet specification).
 * **Salt Rotation:** A fresh, random 16-byte salt (`os.urandom`) is generated on every single save operation to mitigate cryptographic wear and replay attacks.
 * **Destructive Operation Friction:** Structural deletions enforce explicit validation mechanisms based on node depth and type to prevent accidental data loss.
+* **Dirty State Protection:** In-memory changes are continuously tracked (`has_unsaved_changes`) to prevent unintended data loss when terminating the session without persisting changes.
+* **Zero-Risk Password Migration:** Re-keying exports active RAM state to an entirely new encrypted database container, ensuring existing vaults remain intact if an issue arises.
 
 ---
 
@@ -31,7 +33,6 @@ It is highly recommended to install the dependencies inside an isolated virtual 
 ```bash
 git clone https://github.com/hosseingz/cryptovault-cli.git
 cd cryptovault-cli
-
 ```
 
 2. Create and activate a virtual environment:
@@ -41,7 +42,6 @@ cd cryptovault-cli
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-
 ```
 
 * **Windows (Command Prompt):**
@@ -49,7 +49,6 @@ source venv/bin/activate
 ```cmd
 python -m venv venv
 venv\Scripts\activate.bat
-
 ```
 
 * **Windows (PowerShell):**
@@ -57,7 +56,6 @@ venv\Scripts\activate.bat
 ```powershell
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-
 ```
 
 3. Install the required external core dependency:
@@ -65,7 +63,6 @@ python -m venv venv
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
-
 ```
 
 ---
@@ -79,7 +76,6 @@ To run the application, execute the main script while providing the database fil
 ```bash
 # Ensure your virtual environment is active before running
 python main.py my_vault
-
 ```
 
 If the specified file (e.g., `my_vault.crp`) does not exist, the CLI will initialize a clean, empty database architecture in memory, ready to be populated and committed to disk.
@@ -90,15 +86,20 @@ Once authenticated, you can traverse and manipulate your data tree using the fol
 
 | Command | Syntax | Description |
 | --- | --- | --- |
-| `ls` | `ls` | Lists indexed directories `[DIR]` and values `[VAL]` at the current path level. |
+| `ls` | `ls` or `ls [--tree \| --tr]` | Lists indexed directories `[DIR]` and values `[VAL]` at current path. Use `--tree` or `--tr` to render the full recursive tree hierarchy. |
 | `cd` | `cd <key>` or `cd <index>` or `cd ..` | Navigates into a directory using its exact key name or its numeric index. Use `..` to return to the parent directory. |
 | `mkdir` | `mkdir <key>` | Creates a new empty nested directory (dictionary) at the current level. **Always processes input as a literal name, ignoring index numbers.** |
-| `set` | `set <key/index> <value>` | Assigns a string value to a key or updates an existing node via its index number. |
-| `get` | `get <key>` or `get <index>` | Displays the value of a specific node using its exact name or numeric index without changing your path. |
-| `rm` | `rm <exact_key>` | Detaches a key or an entire directory from the active RAM state. **Enforces security confirmation and bypasses numeric index translation.** |
-| `save` | `save` | Rotates the salt, re-encrypts the RAM data, and commits changes to disk. |
+| `set` | `set <key/index> <value>` | Assigns a string value to a key or updates an existing node via its index number. Blocks overwriting directory nodes and prompts for confirmation if updating existing values. |
+| `get` | `get <key>` or `get <index>` | Displays the value of a specific node. If targeting a directory node, renders its entire nested subtree visually. |
+| `rename` | `rename <key/index> <new_key>` | Renames a key or directory at the current path. Enforces strict name validation (no `/` or spaces) and prevents key collisions. |
+| `copy` | `copy <key/index>` | Copies a key or directory to the internal clipboard for safe deep duplication elsewhere. |
+| `cut` | `cut <key/index>` | Stages a key or directory to the clipboard for moving. Prevents circular tree placement into child descendants. |
+| `paste` | `paste [new_name]` | Pastes clipboard content into current directory. Accepts an optional new key name to prevent collisions or duplicate locally. |
+| `rm` | `rm <exact_key>` | Detaches a key or an entire directory from active RAM state. **Enforces security confirmation and bypasses numeric index translation.** |
+| `passwd` | `passwd <new_file>` | Migrates current vault data into a new encrypted file under a new master password, leaving original database untouched. |
+| `save` | `save` | Rotates the salt, re-encrypts RAM data, and commits changes to disk. Resets unsaved changes state. |
 | `clear` | `clear` | Clears the screen to prevent optical leaking of sensitive terminal logs. |
-| `exit` | `exit` | Terminates the session. Unsaved changes in RAM will be destroyed. |
+| `exit` | `exit` | Terminates the session. If unsaved changes exist in RAM, prompts for explicit user confirmation before exiting. |
 
 > ⚠️ **Exact Match Priority Rule:** If you pass an integer (e.g., `get 1`) to a command, the system will first look for a key literally named `"1"`. If no such literal key exists, it will fall back to resolving it as the 1st item from the last sorted `ls` output.
 
@@ -132,24 +133,27 @@ Available Keys:
   1. [VAL] prod_db_host
   2. [VAL] secondary_db
 
-[Vault:/infrastructure]🔑 rm secondary_db
-[⚠️ WARNING] You are about to delete the value node named 'secondary_db'.
---> To proceed, type 'YES' exactly: YES
-[+] Successfully purged 'secondary_db' from active RAM state. Remember to 'save'.
+[Vault:/infrastructure]🔑 copy 1
+[-] Copied 'prod_db_host' to clipboard.
+
+[Vault:/infrastructure]🔑 paste backup_db_host
+[+] Successfully copied 'prod_db_host' to 'backup_db_host'. Remember to 'save'.
 
 [Vault:/infrastructure]🔑 cd ..
 
-[Vault:/]🔑 rm infrastructure
-[⚠️ WARNING] 'infrastructure' is a non-empty directory containing 1 active item(s).
-[!] This action will recursively delete ALL nested keys inside this tree structure.
---> To proceed, type 'DELETE_ALL' exactly: DELETE_ALL
-[+] Successfully purged 'infrastructure' from active RAM state. Remember to 'save'.
+[Vault:/]🔑 ls --tree
+
+./
+└── infrastructure/
+    ├── backup_db_host: 10.0.0.5
+    ├── prod_db_host: 10.0.0.5
+    └── secondary_db: 10.0.0.6
 
 [Vault:/]🔑 save
 [+] Database encrypted and safely written to disk.
 
 [Vault:/]🔑 exit
-
+Exiting.
 ```
 
 ---
