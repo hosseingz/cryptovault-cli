@@ -538,6 +538,45 @@ class SecureBackupCLI:
         else:
             print("[!] Critical Failure: Failed to remove node structure from path state.")
 
+    def cmd_passwd(self, new_filepath: str):
+        """
+        Exports the current database state into a new encrypted file under a new master password.
+        Leaves the existing database file untouched.
+        """
+        new_filepath = new_filepath.strip()
+        if not new_filepath.endswith(".crp"):
+            new_filepath += ".crp"
+
+        if os.path.exists(new_filepath):
+            print(f"[!] Target file '{new_filepath}' already exists. Operation aborted to prevent overwrite.")
+            return
+
+        print("=== Master Password Migration ===")
+        current_pwd = getpass.getpass("Enter CURRENT Master Password: ")
+        if current_pwd != self.master_password:
+            print("[!] Incorrect current password. Operation aborted.")
+            return
+
+        new_pwd = getpass.getpass("Enter NEW Master Password: ")
+        if not new_pwd:
+            print("[!] New password cannot be empty.")
+            return
+
+        confirm_pwd = getpass.getpass("Confirm NEW Master Password: ")
+        if new_pwd != confirm_pwd:
+            print("[!] Password confirmation mismatch. Operation aborted.")
+            return
+
+        try:
+            # Instantiate an isolated manager pointing to the target file
+            new_manager = SecureBackupManager(new_filepath)
+            new_manager.data = copy.deepcopy(self.manager.data)
+            new_manager.save_file(new_pwd)
+            print(f"[+] Successfully migrated vault to new file: '{new_filepath}'.")
+            print("[-] Existing database session remains active on the current file.")
+        except Exception as e:
+            print(f"[!] Critical Failure: Failed to write new database: {e}")
+
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
@@ -551,6 +590,7 @@ class SecureBackupCLI:
         print("  cut <k/id>  - Cut a key or directory to clipboard")
         print("  paste [new] - Paste item into current path (optional new name)")
         print("  rm <key>    - Delete a key or directory (Requires precise literal name)")
+        print("  passwd <new_file> - Export vault to a new file with a new password")
         print("  save        - Encrypt and commit changes to disk")
         print("  clear       - Clear the terminal screen")
         print("  exit        - Exit the manager")
@@ -638,6 +678,11 @@ class SecureBackupCLI:
                         print("[!] Usage: rm <exact_key_name>")
                     else:
                         self.cmd_rm(user_input[1])
+                elif cmd == "passwd":
+                    if len(user_input) < 2:
+                        print("[!] Usage: passwd <new_vault_filename>")
+                    else:
+                        self.cmd_passwd(user_input[1])
                 elif cmd == "save":
                     self.manager.save_file(self.master_password)
                     print("[+] Database encrypted and safely written to disk.")
