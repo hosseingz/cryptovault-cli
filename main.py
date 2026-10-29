@@ -149,6 +149,44 @@ class SecureBackupManager:
             return True
         return False
 
+    def search(self, query: str, search_keys: bool = True, search_values: bool = True) -> list:
+        """
+        Recursively searches the entire data tree for matching keys or values.
+        Returns a list of dicts containing path, node type, match location, and value.
+        """
+        results = []
+        target = query.lower()
+
+        def _traverse(node: dict, current_path: list):
+            for key, val in node.items():
+                path = current_path + [key]
+                is_dir = isinstance(val, dict)
+                key_matched = search_keys and (target in key.lower())
+
+                if is_dir:
+                    if key_matched:
+                        results.append({
+                            "path": path,
+                            "type": "DIR",
+                            "match_in": "KEY",
+                            "value": None
+                        })
+                    _traverse(val, path)
+                else:
+                    val_str = str(val)
+                    val_matched = search_values and (target in val_str.lower())
+                    if key_matched or val_matched:
+                        match_in = "BOTH" if (key_matched and val_matched) else ("KEY" if key_matched else "VAL")
+                        results.append({
+                            "path": path,
+                            "type": "VAL",
+                            "match_in": match_in,
+                            "value": val_str
+                        })
+
+        _traverse(self.data, [])
+        return results
+
     def get_all_data(self) -> dict:
         """Returns the entire dictionary currently held in RAM."""
         return self.data
@@ -641,12 +679,69 @@ class SecureBackupCLI:
         if set_target_key:
             self.cmd_set(set_target_key, generated_password)
 
+    def cmd_find(self, args: list):
+        """
+        Searches across the entire vault for matching keys and values.
+        Syntax: find <query> [--keys|-k] [--vals|-v] [--show|-s]
+        """
+        if not args:
+            print("[!] Usage: find <query> [--keys|-k] [--vals|-v] [--show|-s]")
+            return
+
+        query_parts = []
+        only_keys = False
+        only_vals = False
+        show_values = False
+
+        for arg in args:
+            if arg in ("--keys", "-k"):
+                only_keys = True
+            elif arg in ("--vals", "-v"):
+                only_vals = True
+            elif arg in ("--show", "-s"):
+                show_values = True
+            elif arg.startswith("-"):
+                print(f"[!] Unknown option: '{arg}'")
+                print("[-] Usage: find <query> [--keys|-k] [--vals|-v] [--show|-s]")
+                return
+            else:
+                query_parts.append(arg)
+
+        query = " ".join(query_parts).strip()
+        if not query:
+            print("[!] Search query cannot be empty.")
+            return
+
+        # Determine search scope (if neither or both flags are set, search both)
+        search_keys = True
+        search_values = True
+        if only_keys and not only_vals:
+            search_values = False
+        elif only_vals and not only_keys:
+            search_keys = False
+
+        results = self.manager.search(query, search_keys=search_keys, search_values=search_values)
+
+        if not results:
+            print(f"[-] No matches found for '{query}'.")
+            return
+
+        print(f"\nSearch Results for '{query}' ({len(results)} found):")
+        for idx, item in enumerate(results, start=1):
+            full_path_str = "/" + "/".join(item["path"])
+            if item["type"] == "DIR":
+                print(f"  {idx}. [DIR] {full_path_str}/")
+            else:
+                display_val = item["value"] if show_values else "********"
+                print(f"  {idx}. [VAL] {full_path_str} -> {display_val} (Matched: {item['match_in']})")
+
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
         print("  ls [--tree|--tr]                       - List keys (flat or recursive tree view)")
         print("  cd <key/id>                            - Move into a key (use 'cd ..' to go back)")
         print("  mkdir <key>                            - Create a new empty nested directory")
+        print("  find <q> [-k] [-v] [-s]                - Search vault (mask values unless -s is set)")
         print("  get <key/id>                           - View the value of a specific key")
         print("  genpass [len] [-ns] [-nn] [-s <k>]     - Generate a strong password")
         print("  set <k> <v>                            - Set a value at the current path")
@@ -708,6 +803,9 @@ class SecureBackupCLI:
                         print("[!] Usage: mkdir <key_name>")
                     else:
                         self.cmd_mkdir(user_input[1])
+                elif cmd == "find":
+                    raw_args = raw_line.split()[1:]
+                    self.cmd_find(raw_args)
                 elif cmd == "get":
                     if len(user_input) < 2:
                         print("[!] Usage: get <key_name or id>")
