@@ -215,7 +215,7 @@ class SecureBackupCLI:
         path_str = "/" + "/".join(self.current_path)
         print(f"\n[Vault:{path_str}]🔑 ", end="")
 
-    def _print_tree(self, node: dict, prefix: str = ""):
+    def _print_tree(self, node: dict, prefix: str = "", mask_values: bool = False):
         """
         Recursively renders nested dictionary structures as a formatted tree.
         """
@@ -236,9 +236,10 @@ class SecureBackupCLI:
             if isinstance(value, dict):
                 print(f"{prefix}{connector}{key}/")
                 extension = "    " if is_last else "│   "
-                self._print_tree(value, prefix + extension)
+                self._print_tree(value, prefix + extension, mask_values)
             else:
-                print(f"{prefix}{connector}{key}: {value}")
+                display_val = "********" if mask_values else value
+                print(f"{prefix}{connector}{key}: {display_val}")
 
     def _get_sorted_keys(self, node: dict) -> list:
         """
@@ -284,7 +285,7 @@ class SecureBackupCLI:
             print("[!] Access Denied. Wrong password or corrupted file.")
             return False
 
-    def cmd_ls(self, tree_mode: bool = False):
+    def cmd_ls(self, tree_mode: bool = False, mask_values: bool = False):
         """Lists keys at the current level or renders the subtree if tree_mode is True."""
         node = self._get_current_node()
         if isinstance(node, dict):
@@ -295,7 +296,7 @@ class SecureBackupCLI:
             if tree_mode:
                 root_label = self.current_path[-1] if self.current_path else "."
                 print(f"\n{root_label}/")
-                self._print_tree(node)
+                self._print_tree(node, mask_values=mask_values)
                 return
 
             print("\nAvailable Keys:")
@@ -305,7 +306,8 @@ class SecureBackupCLI:
                 type_indicator = "[DIR]" if isinstance(val, dict) else "[VAL]"
                 print(f"  {idx}. {type_indicator} {key}")
         else:
-            print(f"\nValue: {node}")
+            display_val = "********" if mask_values else node
+            print(f"\nValue: {display_val}")
 
     def cmd_cd(self, target: str):
         """Navigates inside the nested structure using relative or absolute paths."""
@@ -376,8 +378,8 @@ class SecureBackupCLI:
         self.manager.set_value(full_path, {})
         print(f"[-] Created directory '{key}'. You can now 'cd' into it.")
 
-    def cmd_get(self, key: str):
-        """Retrieves and displays a value or renders a directory subtree."""
+    def cmd_get(self, key: str, reveal: bool = False):
+        """Retrieves and displays a value or renders a directory subtree. Values are masked by default unless reveal is True."""
         target_key = self._resolve_key(key)
 
         node = self._get_current_node()
@@ -386,9 +388,10 @@ class SecureBackupCLI:
             
             if isinstance(target_value, dict):
                 print(f"\n{target_key}/")
-                self._print_tree(target_value)
+                self._print_tree(target_value, mask_values=not reveal)
             else:
-                print(f"\n{target_key}: {target_value}")
+                display_val = target_value if reveal else "********"
+                print(f"\n{target_key}: {display_val}")
         else:
             print(f"[!] Key or Index '{key}' not found here.")
 
@@ -771,11 +774,11 @@ class SecureBackupCLI:
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
-        print("  ls [--tree|--tr]                       - List keys (flat or recursive tree view)")
+        print("  ls [--tree|--tr] [-m|--mask]           - List keys (use -m to mask values in tree view)")
         print("  cd <key/id>                            - Move into a key (use 'cd ..' to go back)")
         print("  mkdir <key>                            - Create a new empty nested directory")
         print("  find <q> [-k] [-v] [-s]                - Search vault (mask values unless -s is set)")
-        print("  get <key/id>                           - View the value of a specific key")
+        print("  get <key/id> [-r|--reveal]             - View a key's value (masked by default)")
         print("  genpass [len] [-ns] [-nn] [-s <k>]     - Generate a strong password")
         print("  set <k> <v>                            - Set a value at the current path")
         print("  rename <k/id> <new_k>                  - Rename a key or directory")
@@ -816,12 +819,21 @@ class SecureBackupCLI:
                     print("Exiting.")
                     break
                 elif cmd == "ls":
-                    if len(user_input) == 1:
-                        self.cmd_ls()
-                    elif len(user_input) == 2 and user_input[1].lower() in ("--tree", "--tr"):
-                        self.cmd_ls(tree_mode=True)
-                    else:
-                        print(f"[!] Unknown option '{user_input[1]}'. Usage: ls [--tree | --tr]")
+                    raw_args = raw_line.split()[1:]
+                    tree_mode = False
+                    mask_values = False
+                    invalid_flag = False
+                    for arg in raw_args:
+                        if arg.lower() in ("--tree", "--tr"):
+                            tree_mode = True
+                        elif arg.lower() in ("-m", "--mask"):
+                            mask_values = True
+                        else:
+                            print(f"[!] Unknown option '{arg}'. Usage: ls [--tree | --tr] [-m | --mask]")
+                            invalid_flag = True
+                            break
+                    if not invalid_flag:
+                        self.cmd_ls(tree_mode=tree_mode, mask_values=mask_values)
                 elif cmd == "help":
                     self.cmd_help()
                 elif cmd == "clear":
@@ -840,10 +852,17 @@ class SecureBackupCLI:
                     raw_args = raw_line.split()[1:]
                     self.cmd_find(raw_args)
                 elif cmd == "get":
-                    if len(user_input) < 2:
-                        print("[!] Usage: get <key_name or id>")
-                    else:
-                        self.cmd_get(user_input[1])
+                    raw_args = raw_line.split()[1:]
+                    if not raw_args:
+                        print("[!] Usage: get <key_name or id> [-r | --reveal]")
+                        continue
+                    
+                    target_key = raw_args[0]
+                    reveal = False
+                    if len(raw_args) > 1 and raw_args[1].lower() in ("-r", "--reveal"):
+                        reveal = True
+                    
+                    self.cmd_get(target_key, reveal=reveal)
                 elif cmd == "genpass":
                     # Extract all arguments following the 'genpass' command
                     raw_args = raw_line.split()[1:]
