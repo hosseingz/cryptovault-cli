@@ -1,6 +1,7 @@
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.fernet import Fernet
+import datetime
 import getpass
 import secrets
 import base64
@@ -87,19 +88,45 @@ class SecureBackupManager:
     def set_value(self, keys: list, value):
         """
         Sets a value inside a nested dictionary dynamically using a list of keys.
-        Example: keys=['cloud', 'github', 'token'] -> sets self.data['cloud']['github']['token'] = value
+        Values are wrapped in a metadata dictionary containing the actual value and timestamps.
         """
         current = self.data
         for key in keys[:-1]:
             if key not in current or not isinstance(current[key], dict):
                 current[key] = {}
             current = current[key]
-        current[keys[-1]] = value
+            
+        now = datetime.datetime.now().isoformat()
+        
+        # If updating an existing key, preserve created_at
+        if keys[-1] in current and isinstance(current[keys[-1]], dict) and "_meta" in current[keys[-1]]:
+            created_at = current[keys[-1]]["_meta"].get("created_at", now)
+            current[keys[-1]] = {
+                "_meta": {
+                    "created_at": created_at,
+                    "updated_at": now
+                },
+                "value": value
+            }
+        else:
+            current[keys[-1]] = {
+                "_meta": {
+                    "created_at": now,
+                    "updated_at": now
+                },
+                "value": value
+            }
+            
         self.has_unsaved_changes = True
 
-    def get_value(self, keys: list):
+    def _is_wrapped_value(self, node):
+        """Helper to check if a dictionary node is a wrapped metadata value."""
+        return isinstance(node, dict) and "_meta" in node and "value" in node
+
+    def get_value(self, keys: list, raw=False):
         """
         Retrieves a value from a nested dictionary path.
+        If raw=False, unwraps the value from its metadata container for seamless CLI interaction.
         Returns None if the path or key does not exist.
         """
         current = self.data
@@ -108,6 +135,10 @@ class SecureBackupManager:
                 current = current[key]
             else:
                 return None
+                
+        if not raw and self._is_wrapped_value(current):
+            return current["value"]
+            
         return current
 
     def remove_value(self, keys: list) -> bool:
@@ -163,7 +194,12 @@ class SecureBackupManager:
                 is_dir = isinstance(val, dict)
                 key_matched = search_keys and (target in key.lower())
 
-                if is_dir:
+                if key == "_meta":
+                    continue
+                    
+                is_val_node = self._is_wrapped_value(val)
+                
+                if is_dir and not is_val_node:
                     if key_matched:
                         results.append({
                             "path": path,
@@ -173,7 +209,8 @@ class SecureBackupManager:
                         })
                     _traverse(val, path)
                 else:
-                    val_str = str(val)
+                    actual_val = val["value"] if is_val_node else val
+                    val_str = str(actual_val)
                     val_matched = search_values and (target in val_str.lower())
                     if key_matched or val_matched:
                         match_in = "BOTH" if (key_matched and val_matched) else ("KEY" if key_matched else "VAL")
@@ -229,11 +266,17 @@ class SecureBackupCLI:
             key=lambda item: (0 if isinstance(item[1], dict) else 1, item[0].lower())
         )
 
-        for index, (key, value) in enumerate(items):
-            is_last = (index == len(items) - 1)
+        # Filter out _meta from tree view
+        filtered_items = [(k, v) for k, v in items if k != "_meta"]
+        
+        for index, (key, value) in enumerate(filtered_items):
+            is_last = (index == len(filtered_items) - 1)
             connector = "└── " if is_last else "├── "
 
-            if isinstance(value, dict):
+            if isinstance(value, dict) and "_meta" in value and "value" in value:
+                display_val = "********" if mask_values else value["value"]
+                print(f"{prefix}{connector}{key}: {display_val}")
+            elif isinstance(value, dict):
                 print(f"{prefix}{connector}{key}/")
                 extension = "    " if is_last else "│   "
                 self._print_tree(value, prefix + extension, mask_values)
@@ -246,7 +289,7 @@ class SecureBackupCLI:
         Sorts keys within a dictionary node. 
         Directories (nested dicts) come first, then sorted alphabetically.
         """
-        return sorted(node.keys(), key=lambda k: (0 if isinstance(node[k], dict) else 1, k.lower()))
+        return sorted([k for k in node.keys() if k != "_meta"], key=lambda k: (0 if isinstance(node[k], dict) and not self.manager._is_wrapped_value(node[k]) else 1, k.lower()))
 
     def _resolve_key(self, target: str, node: dict = None) -> str:
         """
@@ -301,10 +344,18 @@ class SecureBackupCLI:
 
             print("\nAvailable Keys:")
             sorted_keys = self._get_sorted_keys(node)
-            for idx, key in enumerate(sorted_keys, start=1):
+            display_idx = 1
+            for key in sorted_keys:
+                if key == "_meta":
+                    continue
                 val = node[key]
-                type_indicator = "[DIR]" if isinstance(val, dict) else "[VAL]"
-                print(f"  {idx}. {type_indicator} {key}")
+                # Determine type: it is a DIR ONLY if it is a dict AND NOT a wrapped value. Otherwise it's a VAL.
+                if isinstance(val, dict) and not self.manager._is_wrapped_value(val):
+                    type_indicator = "[DIR]"
+                else:
+                    type_indicator = "[VAL]"
+                print(f"  {display_idx}. {type_indicator} {key}")
+                display_idx += 1
         else:
             display_val = "********" if mask_values else node
             print(f"\nValue: {display_val}")
@@ -347,7 +398,7 @@ class SecureBackupCLI:
             resolved_seg = self._resolve_key(seg, node=current_node)
 
             if resolved_seg in current_node:
-                if isinstance(current_node[resolved_seg], dict):
+                if isinstance(current_node[resolved_seg], dict) and not self.manager._is_wrapped_value(current_node[resolved_seg]):
                     temp_path.append(resolved_seg)
                 else:
                     print(f"[!] '{resolved_seg}' is a value, not a directory. Cannot cd into it.")
@@ -386,11 +437,12 @@ class SecureBackupCLI:
         if isinstance(node, dict) and target_key in node:
             target_value = node[target_key]
             
-            if isinstance(target_value, dict):
+            if isinstance(target_value, dict) and not self.manager._is_wrapped_value(target_value):
                 print(f"\n{target_key}/")
                 self._print_tree(target_value, mask_values=not reveal)
             else:
-                display_val = target_value if reveal else "********"
+                actual_val = target_value["value"] if self.manager._is_wrapped_value(target_value) else target_value
+                display_val = actual_val if reveal else "********"
                 print(f"\n{target_key}: {display_val}")
         else:
             print(f"[!] Key or Index '{key}' not found here.")
@@ -405,11 +457,12 @@ class SecureBackupCLI:
         target_key = self._resolve_key(key)
 
         if target_key in node:
-            if isinstance(node[target_key], dict):
+            if isinstance(node[target_key], dict) and not self.manager._is_wrapped_value(node[target_key]):
                 print(f"[!] Target '{target_key}' is a directory. Cannot overwrite a directory with a value.")
                 return
 
-            current_val = node[target_key]
+            raw_target = node[target_key]
+            current_val = raw_target["value"] if self.manager._is_wrapped_value(raw_target) else raw_target
             confirm = input(f"[?] Key '{target_key}' exists (current: '{current_val}'). Overwrite? (y/N): ").strip().lower()
             if confirm not in ("y", "yes"):
                 print("[-] Update cancelled.")
@@ -449,7 +502,7 @@ class SecureBackupCLI:
             return
 
         if new_key in node:
-            conflict_type = "directory" if isinstance(node[new_key], dict) else "value"
+            conflict_type = "directory" if isinstance(node[new_key], dict) and not self.manager._is_wrapped_value(node[new_key]) else "value"
             print(f"[!] Key '{new_key}' already exists as a {conflict_type}. Rename aborted.")
             return
 
@@ -547,7 +600,7 @@ class SecureBackupCLI:
 
         # Handle key collisions in the destination directory
         if dest_key in dest_node:
-            if isinstance(dest_node[dest_key], dict):
+            if isinstance(dest_node[dest_key], dict) and not self.manager._is_wrapped_value(dest_node[dest_key]):
                 print(f"[!] Target '{dest_key}' already exists as a directory. Use 'paste <new_name>' to avoid collision.")
                 return
 
@@ -589,7 +642,7 @@ class SecureBackupCLI:
         target_node = node[target_key]
         
         # Scenario A: Non-empty Directory (Demands Recursive Deep-Purge Agreement)
-        if isinstance(target_node, dict) and len(target_node) > 0:
+        if isinstance(target_node, dict) and not self.manager._is_wrapped_value(target_node) and len(target_node) > 0:
             item_count = len(target_node)
             print(f"[⚠️ WARNING] '{target_key}' is a non-empty directory containing {item_count} active item(s).")
             print("[!] This action will recursively delete ALL nested keys inside this tree structure.")
@@ -600,7 +653,7 @@ class SecureBackupCLI:
 
         # Scenario B: Leaf Node (Value) or Empty Directory (Requires Simple Affirmation)
         else:
-            node_type = "empty directory" if isinstance(target_node, dict) else "value node"
+            node_type = "empty directory" if isinstance(target_node, dict) and not self.manager._is_wrapped_value(target_node) else "value node"
             print(f"[⚠️ WARNING] You are about to delete the {node_type} named '{target_key}'.")
             confirm = input("--> To proceed, type 'YES' exactly: ").strip()
             if confirm != "YES":
@@ -771,6 +824,25 @@ class SecureBackupCLI:
                 display_val = item["value"] if show_values else "********"
                 print(f"  {idx}. [VAL] {full_path_str} -> {display_val} (Matched: {item['match_in']})")
 
+    def cmd_info(self, key: str):
+        """Displays metadata (creation and modification dates) for a specific key."""
+        target_key = self._resolve_key(key)
+        # We need the raw node to access _meta
+        current = self.current_path + [target_key]
+        raw_node = self.manager.get_value(current, raw=True)
+        
+        if raw_node is None:
+            print(f"[!] Key or Index '{key}' not found here.")
+            return
+            
+        if isinstance(raw_node, dict) and "_meta" in raw_node:
+            meta = raw_node["_meta"]
+            print(f"\nMetadata for '{target_key}':")
+            print(f"  Created At: {meta.get('created_at', 'N/A')}")
+            print(f"  Updated At: {meta.get('updated_at', 'N/A')}")
+        else:
+            print(f"\n[i] No metadata available for '{target_key}' (likely a legacy or pure directory node).")
+
     def cmd_help(self):
         """Prints available commands."""
         print("\nCommands:")
@@ -779,6 +851,7 @@ class SecureBackupCLI:
         print("  mkdir <key>                            - Create a new empty nested directory")
         print("  find <q> [-k] [-v] [-s]                - Search vault (mask values unless -s is set)")
         print("  get <key/id> [-r|--reveal]             - View a key's value (masked by default)")
+        print("  info <key/id>                          - View metadata (created_at, updated_at) for a node")
         print("  genpass [len] [-ns] [-nn] [-s <k>]     - Generate a strong password")
         print("  set <k> <v>                            - Set a value at the current path")
         print("  rename <k/id> <new_k>                  - Rename a key or directory")
@@ -851,6 +924,11 @@ class SecureBackupCLI:
                 elif cmd == "find":
                     raw_args = raw_line.split()[1:]
                     self.cmd_find(raw_args)
+                elif cmd == "info":
+                    if len(user_input) < 2:
+                        print("[!] Usage: info <key_name or id>")
+                    else:
+                        self.cmd_info(user_input[1])
                 elif cmd == "get":
                     raw_args = raw_line.split()[1:]
                     if not raw_args:
