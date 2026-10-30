@@ -247,12 +247,13 @@ class SecureBackupCLI:
         """
         return sorted(node.keys(), key=lambda k: (0 if isinstance(node[k], dict) else 1, k.lower()))
 
-    def _resolve_key(self, target: str) -> str:
+    def _resolve_key(self, target: str, node: dict = None) -> str:
         """
         Resolves a numeric index input back to its actual string key.
         Implements 'Exact Match Priority' to prevent dangerous overwrites if a key is named '1'.
         """
-        node = self._get_current_node()
+        if node is None:
+            node = self._get_current_node()
         if not isinstance(node, dict):
             return target
 
@@ -270,7 +271,6 @@ class SecureBackupCLI:
 
         # 3. Fallback: Return raw target (will naturally fail later if invalid)
         return target
-
     def authenticate(self) -> bool:
         """Handles the initial login/decryption phase."""
         print("=== Secure Backup Manager CLI ===")
@@ -308,23 +308,56 @@ class SecureBackupCLI:
             print(f"\nValue: {node}")
 
     def cmd_cd(self, target: str):
-        """Navigates inside the nested structure."""
-        if target == "..":
-            if self.current_path:
-                self.current_path.pop()
+        """Navigates inside the nested structure using relative or absolute paths."""
+        target = target.strip()
+        if not target:
             return
 
-        target_key = self._resolve_key(target)
+        # Direct jump to root
+        if target in ("/", "~"):
+            self.current_path = []
+            return
 
-        node = self._get_current_node()
-        if isinstance(node, dict) and target_key in node:
-            if isinstance(node[target_key], dict):
-                self.current_path.append(target_key)
-            else:
-                print(f"[!] '{target_key}' is a value, not a directory. Cannot cd into it.")
+        # Determine starting point: root if absolute path, else a copy of current path
+        if target.startswith("/"):
+            temp_path = []
         else:
-            print(f"[!] Key or Index '{target}' not found.")
+            temp_path = list(self.current_path)
 
+        # Split path segments and filter out empty parts (e.g., from trailing or double slashes)
+        segments = [seg for seg in target.split("/") if seg]
+
+        for seg in segments:
+            if seg == ".":
+                continue
+            elif seg == "..":
+                if temp_path:
+                    temp_path.pop()
+                continue
+
+            # Fetch the dictionary node corresponding to temp_path
+            current_node = self.manager.get_value(temp_path) if temp_path else self.manager.get_all_data()
+            if not isinstance(current_node, dict):
+                print(f"[!] Path resolution failed: '/{'/'.join(temp_path)}' is not a directory.")
+                return
+
+            # Resolve key name or numeric index relative to the current intermediate node
+            resolved_seg = self._resolve_key(seg, node=current_node)
+
+            if resolved_seg in current_node:
+                if isinstance(current_node[resolved_seg], dict):
+                    temp_path.append(resolved_seg)
+                else:
+                    print(f"[!] '{resolved_seg}' is a value, not a directory. Cannot cd into it.")
+                    return
+            else:
+                loc = "/" + "/".join(temp_path)
+                print(f"[!] Key or Index '{seg}' not found in '{loc}'.")
+                return
+
+        # Commit the new path only if all segments resolved successfully
+        self.current_path = temp_path
+    
     def cmd_mkdir(self, key: str):
         """Creates a new empty dictionary (directory) at the current path."""
         node = self._get_current_node()

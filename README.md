@@ -1,6 +1,6 @@
 # CryptoVault CLI
 
-CryptoVault CLI is a lightweight, local-first secure backup and credential manager. It allows you to store heavily nested data structures inside an encrypted file while interacting with them seamlessly through a terminal interface that mimics a standard Linux shell (`cd`, `ls`, `mkdir`, `rm`).
+CryptoVault CLI is a lightweight, local-first secure backup and credential manager. It allows you to store heavily nested data structures inside an encrypted file while interacting with them seamlessly through a terminal interface that mimics a standard Linux shell (`cd`, `ls`, `mkdir`, `rm`, `find`).
 
 Data is decrypted strictly into RAM during runtime and is never leaked to the disk in plaintext.
 
@@ -32,8 +32,9 @@ It is highly recommended to install the dependencies inside an isolated virtual 
 1. Clone the repository to your local machine:
 
 ```bash
-git clone https://github.com/hosseingz/cryptovault-cli.git
+git clone [https://github.com/hosseingz/cryptovault-cli.git](https://github.com/hosseingz/cryptovault-cli.git)
 cd cryptovault-cli
+
 ```
 
 2. Create and activate a virtual environment:
@@ -87,12 +88,13 @@ Once authenticated, you can traverse and manipulate your data tree using the fol
 
 | Command | Syntax | Description |
 | --- | --- | --- |
-| `ls` | `ls` or `ls [--tree \| --tr]` | Lists indexed directories `[DIR]` and values `[VAL]` at current path. Use `--tree` or `--tr` to render the full recursive tree hierarchy. |
-| `cd` | `cd <key>` or `cd <index>` or `cd ..` | Navigates into a directory using its exact key name or its numeric index. Use `..` to return to the parent directory. |
+| `ls` | `ls` or `ls [--tree | --tr]` | Lists indexed directories `[DIR]` and values `[VAL]` at current path. Use `--tree` or `--tr` to render the full recursive tree hierarchy. |
+| `cd` | `cd <path>` or `cd <index>` | Navigates into directories using relative, absolute (`/`), multi-segment paths, or numeric indexes. Use `..` to go back. |
 | `mkdir` | `mkdir <key>` | Creates a new empty nested directory (dictionary) at the current level. **Always processes input as a literal name, ignoring index numbers.** |
-| `set` | `set <key/index> <value>` | Assigns a string value to a key or updates an existing node via its index number. Blocks overwriting directory nodes and prompts for confirmation if updating existing values. |
+| `find` | `find <query> [-k] [-v] [-s]` | Recursively searches the entire vault. Masks values by default unless `-s` (show) is specified; limits scope with `-k` (keys) or `-v` (values). |
 | `get` | `get <key>` or `get <index>` | Displays the value of a specific node. If targeting a directory node, renders its entire nested subtree visually. |
 | `genpass` | `genpass [length] [--no-sym] [--no-num] [--set <key>]` | Generates a cryptographically strong password. Supports flags `-ns` (no symbols), `-nn` (no numbers), and `-s <key>` to directly persist into the active path. |
+| `set` | `set <key/index> <value>` | Assigns a string value to a key or updates an existing node via its index number. Blocks overwriting directory nodes and prompts for confirmation if updating existing values. |
 | `rename` | `rename <key/index> <new_key>` | Renames a key or directory at the current path. Enforces strict name validation (no `/` or spaces) and prevents key collisions. |
 | `copy` | `copy <key/index>` | Copies a key or directory to the internal clipboard for safe deep duplication elsewhere. |
 | `cut` | `cut <key/index>` | Stages a key or directory to the clipboard for moving. Prevents circular tree placement into child descendants. |
@@ -151,7 +153,15 @@ Available Keys:
     ├── prod_db_host: 10.0.0.5
     └── secondary_db: 10.0.0.6
 
-[Vault:/]🔑 genpass 16 -s api_token
+[Vault:/]🔑 find host
+
+Search Results for 'host' (2 found):
+  1. [VAL] /infrastructure/backup_db_host -> ******** (Matched: KEY)
+  2. [VAL] /infrastructure/prod_db_host -> ******** (Matched: KEY)
+
+[Vault:/]🔑 cd /infrastructure
+
+[Vault:/infrastructure]🔑 genpass 16 -s api_token
 
 Generated Password: kP9#mX2$vL8*wZ5!
 [-] Successfully set 'api_token'. Remember to 'save'.
@@ -170,5 +180,6 @@ Exiting.
 1. **Memory Safety:** Plaintext structures are held in Python's memory heap during the active session. Ensure your host environment is fully secured against unauthorized local inspection, debugging, or memory dumping processes.
 2. **Zero-Knowledge Recovery:** This architecture features a strict zero-knowledge model. There is no back-door, alternative recovery key, or bypass mechanism. If the master password is lost or forgotten, the underlying data payload cannot be recovered.
 3. **Data Loss Mitigation (Friction Protocol):** Destructive functions (`rm`) utilize varying levels of structural confirmation:
+
 * **Leaf/Empty Directories:** Require a literal `YES` confirmation.
 * **Populated Sub-trees:** Require a recursive deep-purge validation string (`DELETE_ALL`) to deter unexpected downstream node termination.
