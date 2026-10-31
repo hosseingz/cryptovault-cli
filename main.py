@@ -119,6 +119,20 @@ class SecureBackupManager:
             
         self.has_unsaved_changes = True
 
+    def create_directory(self, keys: list):
+        """
+        Creates a new empty directory (dictionary) at the specified path.
+        Does not wrap the dictionary in metadata.
+        """
+        current = self.data
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current[key], dict) or self._is_wrapped_value(current[key]):
+                current[key] = {}
+            current = current[key]
+            
+        current[keys[-1]] = {}
+        self.has_unsaved_changes = True
+
     def _is_wrapped_value(self, node):
         """Helper to check if a dictionary node is a wrapped metadata value."""
         return isinstance(node, dict) and "_meta" in node and "value" in node
@@ -424,9 +438,9 @@ class SecureBackupCLI:
             print(f"[!] Key '{key}' already exists.")
             return
 
-        # Use the manager's set_value to safely implant an empty dictionary
+        # Use the manager's create_directory to safely implant an empty directory without metadata wrapping
         full_path = self.current_path + [key]
-        self.manager.set_value(full_path, {})
+        self.manager.create_directory(full_path)
         print(f"[-] Created directory '{key}'. You can now 'cd' into it.")
 
     def cmd_get(self, key: str, reveal: bool = False):
