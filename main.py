@@ -1,4 +1,5 @@
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives import hashes
 from cryptography.fernet import Fernet
 import datetime
@@ -9,6 +10,7 @@ import string
 import json
 import copy
 import sys
+import time
 import os
 
 
@@ -19,23 +21,38 @@ class SecureBackupManager:
         self.data = {}  # Holds the unencrypted data strictly in RAM
         self.has_unsaved_changes = False
 
-    def _derive_key(self, password: str, salt: bytes) -> bytes:
-        """Derives a secure 32-byte Fernet key from a password and salt using PBKDF2."""
+    MAGIC_HEADER = b"CRP2"
+
+    def _derive_key_scrypt(self, password: str, salt: bytes) -> bytes:
+        """
+        Derives a Fernet key using scrypt (Memory-Hard KDF).
+        n=131072 (2^17), r=8, p=1 requires ~128MB RAM per attempt to defeat GPU brute-force.
+        """
+        kdf = Scrypt(
+            salt=salt,
+            length=32,
+            n=2**17,
+            r=8,
+            p=1,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(password.encode('utf-8')))
+
+    def _derive_key_pbkdf2(self, password: str, salt: bytes) -> bytes:
+        """Derives a Fernet key using legacy PBKDF2HMAC for backward compatibility."""
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
-            iterations=600000,  # OWASP recommended iterations for SHA-256
+            iterations=600000,
         )
         return base64.urlsafe_b64encode(kdf.derive(password.encode('utf-8')))
 
     def load_file(self, password: str) -> bool:
         """
-        Reads the encrypted file, extracts the salt, decrypts the content into RAM.
-        Returns True if successful, False if password is wrong or file is corrupted.
+        Reads the encrypted file, detects KDF format, and decrypts content into RAM.
+        Supports both V2 (scrypt) and legacy V1 (PBKDF2) formats.
         """
         if not os.path.exists(self.filepath):
-            # If file doesn't exist, treat it as an empty database ready to be saved
             self.data = {}
             return True
 
@@ -46,40 +63,45 @@ class SecureBackupManager:
             if len(payload) < 16:
                 return False
 
-            # Extract the 16-byte salt and the ciphertext
-            salt = payload[:16]
-            ciphertext = payload[16:]
+            # V2 Format: Starts with Magic Header "CRP2"
+            if payload.startswith(self.MAGIC_HEADER):
+                if len(payload) < 20:  # 4 bytes magic + 16 bytes salt
+                    return False
+                salt = payload[4:20]
+                ciphertext = payload[20:]
+                key = self._derive_key_scrypt(password, salt)
+            else:
+                # Legacy V1 Format: Direct [16 bytes Salt][Ciphertext]
+                salt = payload[:16]
+                ciphertext = payload[16:]
+                key = self._derive_key_pbkdf2(password, salt)
 
-            # Derive the key using the extracted salt and provided password
-            key = self._derive_key(password, salt)
             fernet = Fernet(key)
-
-            # Decrypt and parse JSON directly into memory
             decrypted_bytes = fernet.decrypt(ciphertext)
             self.data = json.loads(decrypted_bytes.decode('utf-8'))
             self.has_unsaved_changes = False
+
+            if not payload.startswith(self.MAGIC_HEADER):
+                print("\n[i] Notice: Vault opened using legacy PBKDF2 format.")
+                print("    Execute 'save' to upgrade this vault to memory-hard Scrypt (128MB RAM protection).")
+
             return True
         except Exception:
-            # Decryption failed (Invalid Token / Wrong Password)
             return False
 
     def save_file(self, password: str):
-        """Encrypts the current in-memory dictionary and saves it to disk."""
-        # Convert the RAM dictionary back to a structured JSON string
+        """
+        Encrypts the in-memory database using scrypt (Memory-Hard) with fresh salt rotation.
+        Prepends the 'CRP2' header to enforce modern cryptographic defenses.
+        """
         json_bytes = json.dumps(self.data, indent=4).encode('utf-8')
-
-        # Generate a fresh random salt for every single save operation (Salt Rotation)
         salt = os.urandom(16)
-
-        # Derive a new key with the new salt
-        key = self._derive_key(password, salt)
+        key = self._derive_key_scrypt(password, salt)
         fernet = Fernet(key)
-
-        # Encrypt the data
         ciphertext = fernet.encrypt(json_bytes)
 
-        # Combine salt and ciphertext into one binary payload [16 bytes Salt][Ciphertext]
-        payload = salt + ciphertext
+        # Structure: [4 bytes Magic "CRP2"][16 bytes Salt][Fernet Ciphertext]
+        payload = self.MAGIC_HEADER + salt + ciphertext
 
         with open(self.filepath, 'wb') as file:
             file.write(payload)
@@ -249,6 +271,7 @@ class SecureBackupCLI:
         self.current_path = []  # Tracks the current position in the nested dict
         self.master_password = ""
         self.clipboard = None  # Stores metadata: {'op': 'COPY'|'CUT', 'path': list, 'key': str}
+        self.max_login_attempts = 5
  
 
     def _clear_screen(self):
@@ -330,17 +353,44 @@ class SecureBackupCLI:
         # 3. Fallback: Return raw target (will naturally fail later if invalid)
         return target
     def authenticate(self) -> bool:
-        """Handles the initial login/decryption phase."""
+        """
+        Handles the initial login/decryption phase with Brute-Force protection.
+        Implements constant-time floor, exponential backoff, and hard lockout.
+        """
         print("=== Secure Backup Manager CLI ===")
-        password = getpass.getpass("Enter Master Password: ")
         
-        if self.manager.load_file(password):
-            self.master_password = password
-            print("[-] Access Granted. Vault loaded into RAM.")
-            return True
-        else:
-            print("[!] Access Denied. Wrong password or corrupted file.")
-            return False
+        failed_attempts = 0
+        
+        while failed_attempts < self.max_login_attempts:
+            password = getpass.getpass("Enter Master Password: ")
+            
+            # Start timer for constant-time mitigation
+            start_time = time.time()
+            
+            success = self.manager.load_file(password)
+            
+            # Ensure the operation took at least 0.5 seconds (Constant-time floor)
+            elapsed = time.time() - start_time
+            if elapsed < 0.5:
+                time.sleep(0.5 - elapsed)
+                
+            if success:
+                self.master_password = password
+                print("[-] Access Granted. Vault loaded into RAM.")
+                return True
+            else:
+                failed_attempts += 1
+                if failed_attempts >= self.max_login_attempts:
+                    print(f"[!] Maximum login attempts ({self.max_login_attempts}) exceeded. System locked.")
+                    return False
+                    
+                # Exponential backoff (1s, 2s, 4s, 8s, ...)
+                delay = 2 ** (failed_attempts - 1)
+                print(f"[!] Access Denied. Wrong password or corrupted file.")
+                print(f"[-] Cooling down for {delay} seconds before next attempt...")
+                time.sleep(delay)
+                
+        return False
 
     def cmd_ls(self, tree_mode: bool = False, mask_values: bool = False):
         """Lists keys at the current level or renders the subtree if tree_mode is True."""
